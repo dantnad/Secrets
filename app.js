@@ -1,5 +1,8 @@
 //jshint esversion:6
 require('dotenv').config();
+const http = require('http')
+const https = require('https');
+const fs = require("fs");
 const express = require('express');
 const mongoose = require('mongoose');
 const app = express();
@@ -8,7 +11,16 @@ const session = require('express-session');
 const passport = require('passport');
 const passportLocalMongoose = require('passport-local-mongoose');
 const GoogleStrategy = require("passport-google-oauth20").Strategy;
+const FacebookStrategy = require('passport-facebook').Strategy;
 const findOrCreate = require('mongoose-findorcreate');
+const certKey = fs.readFileSync(__dirname + '/cert/CA/key.pem');
+const cert = fs.readFileSync(__dirname + '/cert/CA/cert.pem');
+const sslOptions = {
+    key: certKey,
+    cert: cert
+};
+http.createServer(app).listen(3030, function(){console.log('HTTP server running on port 3030')});
+https.createServer(sslOptions, app).listen(3000, function(){console.log('HTTPS server running on port 3000')});
 
 app.use(express.static('public'));
 app.set('view engine', 'ejs');
@@ -28,6 +40,8 @@ const userSchema = new mongoose.Schema({
   password: String,
   active: Boolean,
   googleId: String,
+  facebookId: String,
+  secret: String
 });
 
 userSchema.plugin(passportLocalMongoose);
@@ -52,16 +66,29 @@ passport.deserializeUser(function (user, cb) {
   });
 });
 
-passport.use(
-  new GoogleStrategy(
+passport.use( new GoogleStrategy(
     {
       clientID: process.env.GOOGLE_ID,
       clientSecret: process.env.GOOGLE_SECRET,
-      callbackURL: "http://localhost:3000/auth/google/secrets",
+      callbackURL: "https://localhost:3000/auth/google/secrets",
     },
     function (accessToken, refreshToken, profile, cb) {
-        console.log(profile);
       User.findOrCreate({ googleId: profile.id }, function (err, user) {
+        return cb(err, user);
+      });
+    }
+  )
+);
+
+passport.use(
+  new FacebookStrategy(
+    {
+      clientID: process.env.FACEBOOK_APP_ID,
+      clientSecret: process.env.FACEBOOK_APP_SECRET,
+      callbackURL: "https://localhost:3000/auth/facebook/secrets",
+    },
+    function (accessToken, refreshToken, profile, cb) {
+      User.findOrCreate({ facebookId: profile.id }, function (err, user) {
         return cb(err, user);
       });
     }
@@ -81,6 +108,14 @@ app.route('/auth/google/secrets')
     .get(passport.authenticate('google', {failureRedirect: '/login'}), function(req, res){
         res.redirect('/secrets');
 });
+
+app.route('/auth/facebook').get(passport.authenticate('facebook'));
+
+app.route("/auth/facebook/secrets")
+  .get(passport.authenticate("facebook", { failureRedirect: "/login" }), function(req, res){
+    res.redirect('/secrets');
+  }
+);
 
 app.route('/register')
     .get(function(req, res){
@@ -122,12 +157,39 @@ app.route('/login')
 
 app.route('/secrets')
     .get(function(req, res){
+        User.find({"secret": {$ne:null}}, function(err, foundUsers){
+            if(err){
+                console.log(err);
+            }else{
+                res.render('secrets', {
+                    usersWithSecrets: foundUsers
+                });
+            }
+        })
+});
+
+app.route('/submit').get(function(req, res){
     if(req.isAuthenticated()){
-        res.render('secrets');
+        res.render('submit');
     }else{
         res.redirect('/login');
     }
-});
+    })
+    .post(function(req, res){
+        User.findById(req.user.id, function(err, foundUser){
+            if(err){
+                console.log(err);
+            }else{
+                foundUser.secret = req.body.secret;
+                foundUser.save(function(err){
+                    if(err){
+                        console.log(err);
+                    }
+                    res.redirect("/secrets");
+                });
+            }
+        })
+})
 
 app.route('/logout')
     .get(function(req, res){
@@ -142,8 +204,4 @@ app.route('/logout')
 
 app.route('/submit').get(function(req,res){
     res.render('submit')
-});
-
-app.listen(3000, function(){
-    console.log('Server started on port 3000');
 });
